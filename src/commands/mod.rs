@@ -1,0 +1,15 @@
+pub mod add;
+pub mod audio;
+pub mod autostart;
+pub mod daemon;
+pub mod delete;
+pub mod disable;
+pub mod doctor;
+pub mod enable;
+pub mod interactive;
+pub mod install_driver;
+pub mod list;
+pub mod rename;
+pub mod show;
+pub mod status;
+pub mod template;

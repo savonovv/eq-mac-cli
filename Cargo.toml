@@ -1,0 +1,30 @@
+[package]
+name = "eq-mac-cli"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "CLI and daemon scaffolding for managing macOS EQ presets"
+repository = "https://github.com/savonovv/eq-mac-cli"
+
+[lib]
+name = "eq_mac_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "eqcli"
+path = "src/main.rs"
+
+[[bin]]
+name = "eqmacd"
+path = "src/bin/eqmacd.rs"
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4.5", features = ["derive"] }
+dirs = "6.0"
+cpal = "0.16"
+crossterm = "0.29"
+ringbuf = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
