@@ -3,7 +3,7 @@ name = "eq-mac-cli"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "CLI and daemon scaffolding for managing macOS EQ presets"
+description = "Free and customizable macOS EQ CLI with editable plain-text presets and live audio processing"
 repository = "https://github.com/savonovv/eq-mac-cli"
 
 [lib]

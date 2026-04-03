@@ -5,7 +5,11 @@
 [![License](https://img.shields.io/github/license/savonovv/eq-mac-cli)](./LICENSE)
 [![GitHub repo](https://img.shields.io/badge/github-eq--mac--cli-181717?logo=github)](https://github.com/savonovv/eq-mac-cli)
 
-`eq-mac-cli` is a macOS command-line app for applying saved EQ presets to system playback.
+`eq-mac-cli` is a free, highly customizable EQ workflow for macOS built for people who want more control than the typical paid GUI app gives them.
+
+The core selling point is simple: this gives you a scriptable, editable, plain-text EQ system on macOS without hiding your filters behind a closed UI or charging you for basic control. Your presets are real text files, use familiar APO-style filter lines, can be edited in the terminal, and can be reused, versioned, and tuned as aggressively as you want.
+
+If you have looked for a macOS EQ tool that is both deeply customizable and free, that is exactly the gap this project is trying to fill.
 
 It is built around a simple model:
 
@@ -20,6 +24,7 @@ This project is focused on being:
 2. preset-based
 3. macOS-native enough to autostart with `launchd`
 4. simple to control from an interactive TUI
+5. open and editable because presets live as plain text instead of a hidden database
 
 ## What It Does
 
@@ -92,6 +97,20 @@ Filter 1: ON LS Fc 28 Hz Gain 3.26 dB Q 0.92
 Filter 2: ON PK Fc 223 Hz Gain -2.99 dB Q 0.41'
 ```
 
+From the built-in creator:
+
+```bash
+eqcli
+```
+
+Then:
+
+1. open `Presets`
+2. choose `Add new preset`
+3. choose `Create my own`
+4. type a preset name
+5. tune filters live while listening
+
 ### 5. Choose the real output device
 
 ```bash
@@ -150,18 +169,28 @@ Keyboard controls:
 2. `Enter` or `l`: select
 3. `h` or `Esc`: go back
 4. `d` or `Delete`: delete the selected preset with confirmation
-5. `s`: show the selected preset config, or the active preset if nothing is selected
-6. `q`: quit
+5. `e`: edit the selected saved preset
+6. `r`: rename the selected saved preset
+7. `s`: show the selected preset config, or the active preset if nothing is selected
+8. `q`: quit
 
 Interactive flow:
 
 1. `Presets`
 2. `None (disable EQ)` to bypass processing
 3. `Add new preset`
-4. pick a saved preset to enable it
-5. `Output device` to choose where processed audio goes
+4. choose `From file`, `Paste text`, or `Create my own`
+5. pick a saved preset to enable it
+6. `Output device` to choose where processed audio goes
 
 The interactive menu intentionally hides low-level process details. You do not need to think about the daemon to use the app normally.
+
+Editor workflow:
+
+1. `Create my own` opens a live editor for a brand new preset
+2. `e` edits an existing preset from the presets list
+3. filter changes can be auditioned live while creating your own preset
+4. `s` saves and restarts the daemon
 
 ## CLI Commands
 
@@ -179,6 +208,12 @@ eqcli delete 1
 eqcli enable 1
 eqcli disable
 ```
+
+Interactive-only actions:
+
+1. create your own preset from scratch
+2. edit an existing preset with `e`
+3. tune filters directly in the TUI
 
 ### Audio output
 
@@ -222,15 +257,27 @@ Preamp: -2.5 dB
 Filter 1: ON LS Fc 28 Hz Gain 2.2 dB Q 0.917
 Filter 2: ON PK Fc 223 Hz Gain -6.6 dB Q 0.412
 Filter 3: ON PK Fc 791 Hz Gain 2.4 dB Q 1.277
+Filter 4: ON HS Fc 8000 Hz Gain 4 dB Q 0.707
+Filter 5: ON HP Fc 80 Hz Q 0.707
+Filter 6: ON LP Fc 16000 Hz Q 0.707
 ```
 
 Supported filter types:
 
 1. `LS`
 2. `LSC`
-3. `PK`
+3. `HS`
+4. `HSC`
+5. `HP`
+6. `LP`
+7. `PK`
 
-Current parser support is intentionally narrow and aimed at common AutoEQ-style text.
+Supported Equalizer APO-style lines currently expect `Fc`, `Q`, and:
+
+1. `Gain` for shelf and peak filters
+2. no `Gain` for `HP` and `LP`
+
+This is broader Equalizer APO filter support, but not the full Equalizer APO grammar yet. The parser is still intentionally focused on common AutoEQ / Equalizer APO text lines rather than every EAPO feature.
 
 ## Storage
 

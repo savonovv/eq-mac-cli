@@ -1,4 +1,6 @@
 use crate::commands;
+use crate::eq::editor::EditorState;
+use crate::eq::parser;
 use crate::storage::{active, autostart, config, daemon_state, index, presets};
 use anyhow::Result;
 use crossterm::cursor::MoveTo;
@@ -6,11 +8,12 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
 use crossterm::style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor};
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, size, Clear, ClearType, EnterAlternateScreen,
+    LeaveAlternateScreen,
 };
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub fn run() -> Result<()> {
     let mut terminal = TerminalSession::enter()?;
@@ -74,6 +77,7 @@ enum Screen {
     AddPreset,
     Outputs,
     ConfirmDelete,
+    EditPreset,
 }
 
 struct App {
@@ -84,6 +88,13 @@ struct App {
     presets: Vec<index::IndexEntry>,
     outputs: Vec<String>,
     delete_target: Option<index::IndexEntry>,
+    editor: Option<EditorState>,
+    editor_target: Option<u32>,
+    editor_live_preview: bool,
+    editor_created_here: bool,
+    editor_previous_active: Option<u32>,
+    frequency_input: String,
+    frequency_input_started_at: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -100,12 +111,18 @@ impl App {
         Self {
             screen: Screen::Main,
             selected: 0,
-            message: "j/k or arrows to move, Enter/l to select, h/Esc to go back, d to delete preset, s to show preset, q to quit"
-                .to_string(),
+            message: "Ready".to_string(),
             overview: Overview::default(),
             presets: Vec::new(),
             outputs: Vec::new(),
             delete_target: None,
+            editor: None,
+            editor_target: None,
+            editor_live_preview: false,
+            editor_created_here: false,
+            editor_previous_active: None,
+            frequency_input: String::new(),
+            frequency_input_started_at: None,
         }
     }
 
@@ -145,9 +162,14 @@ impl App {
         match self.screen {
             Screen::Main => 5,
             Screen::Presets => 2 + self.presets.len(),
-            Screen::AddPreset => 3,
+            Screen::AddPreset => 4,
             Screen::Outputs => 1 + self.outputs.len(),
             Screen::ConfirmDelete => 2,
+            Screen::EditPreset => self
+                .editor
+                .as_ref()
+                .map(|editor| editor.filters.len())
+                .unwrap_or(0),
         }
     }
 
@@ -168,8 +190,26 @@ impl App {
     }
 }
 
+fn keybind_agenda(screen: &Screen) -> &'static str {
+    match screen {
+        Screen::Main => "Keys: j/k or arrows move, Enter/l select, q quit",
+        Screen::Presets => {
+            "Keys: j/k or arrows move, Enter/l select, e edit, r rename, d delete, s show, h/Esc back, q quit"
+        }
+        Screen::AddPreset => "Keys: j/k or arrows move, Enter/l select, h/Esc back, q quit",
+        Screen::Outputs => "Keys: j/k or arrows move, Enter/l select, h/Esc back, q quit",
+        Screen::ConfirmDelete => "Keys: j/k or arrows move, Enter/l confirm, h/Esc back, q quit",
+        Screen::EditPreset => {
+            "Keys: digits set freq, n/p bands, a add, d delete, space toggle, m mode, j/k +/-1Hz, +/- gain, Backspace gain=0, h/l q, s save+restart, e exit editor, q quit app"
+        }
+    }
+}
+
 fn render(stdout: &mut io::Stdout, app: &App) -> Result<()> {
     execute!(stdout, Clear(ClearType::All), MoveTo(0, 0))?;
+    let (_, terminal_height) = size()?;
+    let agenda_row = terminal_height.saturating_sub(2);
+    let status_row = terminal_height.saturating_sub(1);
     let mut row = 0u16;
 
     draw_line(stdout, row, "eqcli")?;
@@ -235,6 +275,7 @@ fn render(stdout: &mut io::Stdout, app: &App) -> Result<()> {
                     "Toggle autostart",
                     "Quit",
                 ],
+                agenda_row.saturating_sub(1),
             )?;
         }
         Screen::Presets => {
@@ -258,12 +299,18 @@ fn render(stdout: &mut io::Stdout, app: &App) -> Result<()> {
                 items.push(format!("{}: {}{}", preset.id, preset.name, marker));
             }
             let refs: Vec<&str> = items.iter().map(String::as_str).collect();
-            row = render_items(stdout, row, app, &refs)?;
+            row = render_items(stdout, row, app, &refs, agenda_row.saturating_sub(1))?;
         }
         Screen::AddPreset => {
             draw_line(stdout, row, "Add preset")?;
             row += 1;
-            row = render_items(stdout, row, app, &["From file", "Paste text", "Back"])?;
+            row = render_items(
+                stdout,
+                row,
+                app,
+                &["From file", "Paste text", "Create my own", "Back"],
+                agenda_row.saturating_sub(1),
+            )?;
         }
         Screen::Outputs => {
             draw_line(stdout, row, "Output devices")?;
@@ -282,7 +329,7 @@ fn render(stdout: &mut io::Stdout, app: &App) -> Result<()> {
                 items.push(format!("{}{}", device, marker));
             }
             let refs: Vec<&str> = items.iter().map(String::as_str).collect();
-            row = render_items(stdout, row, app, &refs)?;
+            row = render_items(stdout, row, app, &refs, agenda_row.saturating_sub(1))?;
         }
         Screen::ConfirmDelete => {
             let title = if let Some(target) = &app.delete_target {
@@ -292,19 +339,41 @@ fn render(stdout: &mut io::Stdout, app: &App) -> Result<()> {
             };
             draw_line(stdout, row, &title)?;
             row += 2;
-            row = render_items(stdout, row, app, &["Yes, delete", "No, keep it"])?;
+            row = render_items(
+                stdout,
+                row,
+                app,
+                &["Yes, delete", "No, keep it"],
+                agenda_row.saturating_sub(1),
+            )?;
+        }
+        Screen::EditPreset => {
+            if let Some(editor) = &app.editor {
+                row = render_editor(stdout, row, editor, agenda_row.saturating_sub(1))?;
+            }
         }
     }
 
-    row += 1;
-    draw_line(stdout, row, &app.message)?;
+    execute!(stdout, MoveTo(0, agenda_row), Clear(ClearType::CurrentLine))?;
+    draw_line(stdout, agenda_row, keybind_agenda(&app.screen))?;
+    execute!(stdout, MoveTo(0, status_row), Clear(ClearType::CurrentLine))?;
+    draw_line(stdout, status_row, &format!("Status: {}", app.message))?;
     stdout.flush()?;
     Ok(())
 }
 
-fn render_items(stdout: &mut io::Stdout, start_row: u16, app: &App, items: &[&str]) -> Result<u16> {
+fn render_items(
+    stdout: &mut io::Stdout,
+    start_row: u16,
+    app: &App,
+    items: &[&str],
+    max_row: u16,
+) -> Result<u16> {
     let mut row = start_row;
     for (index, item) in items.iter().enumerate() {
+        if row > max_row {
+            break;
+        }
         let marker = if app.selected == index { ">" } else { " " };
         draw_item(
             stdout,
@@ -315,6 +384,78 @@ fn render_items(stdout: &mut io::Stdout, start_row: u16, app: &App, items: &[&st
         row += 1;
     }
     Ok(row)
+}
+
+fn render_editor(
+    stdout: &mut io::Stdout,
+    start_row: u16,
+    editor: &EditorState,
+    max_row: u16,
+) -> Result<u16> {
+    let mut row = start_row;
+    if row <= max_row {
+        draw_line(stdout, row, &format!("Edit preset: {}", editor.preset_name))?;
+        row += 1;
+    }
+    if row <= max_row {
+        let selected = editor.selected_filter();
+        let gain = if selected.kind.uses_gain() {
+            format!("{} dB", format_value(selected.gain_db))
+        } else {
+            "n/a".to_string()
+        };
+        draw_line(
+            stdout,
+            row,
+            &format!(
+                "Selected: {}  Freq: {} Hz  Gain: {}  Q: {}  {}",
+                selected.kind.token(),
+                format_value(selected.frequency_hz),
+                gain,
+                format_value(selected.q),
+                if selected.enabled { "ON" } else { "OFF" }
+            ),
+        )?;
+        row += 2;
+    }
+
+    for (index, filter) in editor.filters.iter().enumerate() {
+        if row > max_row {
+            break;
+        }
+        let marker = if index == editor.selected_index {
+            ">"
+        } else {
+            " "
+        };
+        let gain = if filter.kind.uses_gain() {
+            format!(" {:>6} dB", format_value(filter.gain_db))
+        } else {
+            "         ".to_string()
+        };
+        let line = format!(
+            "{} #{} {:<2} {:>7} Hz{} Q {:>5} {}",
+            marker,
+            index + 1,
+            filter.kind.token(),
+            format_value(filter.frequency_hz),
+            gain,
+            format_value(filter.q),
+            if filter.enabled { "ON" } else { "OFF" }
+        );
+        draw_item(stdout, row, &line, index == editor.selected_index)?;
+        row += 1;
+    }
+
+    Ok(row)
+}
+
+fn format_value(value: f32) -> String {
+    if value.fract().abs() < 0.001 {
+        format!("{:.0}", value)
+    } else {
+        format!("{:.2}", value)
+    }
 }
 
 fn draw_line(stdout: &mut io::Stdout, row: u16, text: &str) -> Result<()> {
@@ -340,11 +481,26 @@ fn draw_item(stdout: &mut io::Stdout, row: u16, text: &str, selected: bool) -> R
 }
 
 fn handle_key(terminal: &mut TerminalSession, app: &mut App, code: KeyCode) -> Result<bool> {
+    if matches!(app.screen, Screen::EditPreset) {
+        return handle_editor_key(app, code);
+    }
+
     match code {
         KeyCode::Char('q') => return Ok(true),
         KeyCode::Char('s') | KeyCode::Char('S') => {
             let selected_preset_id = selected_preset_id(app)?;
             run_modal(terminal, app, || show_preset_flow(selected_preset_id))?;
+        }
+        KeyCode::Char('e') | KeyCode::Char('E') => {
+            if matches!(app.screen, Screen::Presets) {
+                begin_edit_preset(app)?;
+            }
+        }
+        KeyCode::Char('r') | KeyCode::Char('R') => {
+            if matches!(app.screen, Screen::Presets) {
+                let selected_preset_id = selected_saved_preset_id(app);
+                run_modal(terminal, app, || rename_preset_flow(selected_preset_id))?;
+            }
         }
         KeyCode::Delete | KeyCode::Char('d') => {
             if matches!(app.screen, Screen::Presets) {
@@ -377,6 +533,182 @@ fn handle_key(terminal: &mut TerminalSession, app: &mut App, code: KeyCode) -> R
     Ok(false)
 }
 
+fn handle_editor_key(app: &mut App, code: KeyCode) -> Result<bool> {
+    if let KeyCode::Char(ch) = code {
+        if ch.is_ascii_digit() {
+            apply_frequency_digit(app, ch)?;
+            return Ok(false);
+        }
+    }
+
+    let Some(editor) = app.editor.as_mut() else {
+        app.screen = Screen::Presets;
+        return Ok(false);
+    };
+
+    match code {
+        KeyCode::Char('q') => return Ok(true),
+        KeyCode::Char('e') | KeyCode::Char('E') => {
+            app.editor = None;
+            if app.editor_created_here && !app.editor_live_preview {
+                app.editor_target = None;
+            }
+            app.screen = Screen::Presets;
+            app.selected = 0;
+            app.message = "Exited editor".to_string();
+            app.frequency_input.clear();
+            app.frequency_input_started_at = None;
+        }
+        KeyCode::Char('s') | KeyCode::Char('S') => {
+            let text = editor.to_preset_text();
+            let id = if let Some(id) = app.editor_target {
+                presets::write_preset(id, &text)?;
+                id
+            } else {
+                let id = index::next_id()?;
+                presets::write_preset(id, &text)?;
+                index::append_entry(id, &editor.preset_name)?;
+                app.editor_target = Some(id);
+                id
+            };
+
+            editor.dirty = false;
+            match commands::daemon::run(crate::cli::DaemonCommand::Restart) {
+                Ok(()) => app.message = format!("Saved preset {} and restarted daemon", id),
+                Err(err) => {
+                    app.message = format!("Saved preset {} but restart failed: {}", id, err)
+                }
+            }
+        }
+        KeyCode::Char('n') | KeyCode::Down => editor.next_filter(),
+        KeyCode::Char('p') | KeyCode::Up => editor.previous_filter(),
+        KeyCode::Char('a') => editor.add_filter(),
+        KeyCode::Char('d') | KeyCode::Delete => editor.delete_selected_filter(),
+        KeyCode::Char(' ') => editor.toggle_selected_filter(),
+        KeyCode::Char('m') => editor.cycle_mode(),
+        KeyCode::Char('j') => editor.adjust_frequency(-1.0),
+        KeyCode::Char('k') => editor.adjust_frequency(1.0),
+        KeyCode::Char('-') => editor.adjust_gain(-0.1),
+        KeyCode::Char('+') | KeyCode::Char('=') => editor.adjust_gain(0.1),
+        KeyCode::Backspace => editor.reset_gain(),
+        KeyCode::Char('h') | KeyCode::Left => editor.adjust_q(-0.05),
+        KeyCode::Char('l') | KeyCode::Right => editor.adjust_q(0.05),
+        _ => {}
+    }
+
+    maybe_live_apply_editor(app)?;
+
+    if app.editor.as_ref().is_some_and(|state| state.dirty) {
+        let dirty = app.editor.as_ref().unwrap().dirty;
+        if dirty {
+            let filter = app.editor.as_ref().unwrap().selected_filter();
+            app.message = format!(
+                "Editing {} {} Hz {}",
+                filter.kind.token(),
+                format_value(filter.frequency_hz),
+                if filter.enabled { "ON" } else { "OFF" }
+            );
+        }
+    }
+    Ok(false)
+}
+
+fn begin_edit_preset(app: &mut App) -> Result<()> {
+    let Some(id) = selected_saved_preset_id(app) else {
+        app.message = "Select a saved preset to edit".to_string();
+        return Ok(());
+    };
+
+    let entry = index::resolve_id(id)?;
+    let raw = presets::read_raw_preset(id)?;
+    let preset = parser::parse_preset(&raw, Some(entry.name.clone()))?;
+    let editor = EditorState::from_preset(&preset)?;
+    app.editor = Some(editor);
+    app.editor_target = Some(id);
+    app.editor_live_preview = false;
+    app.editor_created_here = false;
+    app.editor_previous_active = None;
+    app.frequency_input.clear();
+    app.frequency_input_started_at = None;
+    app.screen = Screen::EditPreset;
+    app.message = format!("Editing preset {}", entry.name);
+    Ok(())
+}
+
+fn begin_create_preset(terminal: &mut TerminalSession, app: &mut App) -> Result<()> {
+    let Some(name) = prompt_without_pause(terminal, "preset name")? else {
+        app.message = "Preset creation cancelled".to_string();
+        return Ok(());
+    };
+
+    let id = index::next_id()?;
+    let editor = EditorState::new(name.clone());
+    presets::write_preset(id, &editor.to_preset_text())?;
+    index::append_entry(id, &name)?;
+    let previous_active = active::read_active_id()?;
+    let _ = commands::enable::run(id.to_string());
+
+    app.editor = Some(editor);
+    app.editor_target = Some(id);
+    app.editor_live_preview = true;
+    app.editor_created_here = true;
+    app.editor_previous_active = previous_active;
+    app.frequency_input.clear();
+    app.frequency_input_started_at = None;
+    app.screen = Screen::EditPreset;
+    app.message = format!("Creating preset {}", name);
+    Ok(())
+}
+
+fn apply_frequency_digit(app: &mut App, ch: char) -> Result<()> {
+    let Some(editor) = app.editor.as_mut() else {
+        return Ok(());
+    };
+
+    let now = Instant::now();
+    let should_reset = app
+        .frequency_input_started_at
+        .map(|started| now.duration_since(started) > Duration::from_secs(2))
+        .unwrap_or(true);
+    if should_reset {
+        app.frequency_input.clear();
+    }
+
+    app.frequency_input.push(ch);
+    app.frequency_input_started_at = Some(now);
+
+    if let Ok(value) = app.frequency_input.parse::<f32>() {
+        let new_frequency = value.clamp(10.0, 22_000.0);
+        let filter = editor.selected_filter_mut();
+        filter.frequency_hz = new_frequency;
+        let shown_frequency = filter.frequency_hz;
+        editor.dirty = true;
+        app.message = format!("Frequency input: {} Hz", format_value(shown_frequency));
+        maybe_live_apply_editor(app)?;
+    }
+
+    Ok(())
+}
+
+fn maybe_live_apply_editor(app: &mut App) -> Result<()> {
+    if !app.editor_live_preview {
+        return Ok(());
+    }
+
+    let Some(id) = app.editor_target else {
+        return Ok(());
+    };
+    let Some(editor) = app.editor.as_ref() else {
+        return Ok(());
+    };
+
+    let text = editor.to_preset_text();
+    presets::write_preset(id, &text)?;
+    commands::daemon::ensure_started_with_state()?;
+    let _ = commands::daemon::notify_reload();
+    Ok(())
+}
+
 fn activate_current(terminal: &mut TerminalSession, app: &mut App) -> Result<bool> {
     match app.screen {
         Screen::Main => activate_main(terminal, app),
@@ -396,6 +728,7 @@ fn activate_current(terminal: &mut TerminalSession, app: &mut App) -> Result<boo
             activate_delete_confirmation(app)?;
             Ok(false)
         }
+        Screen::EditPreset => Ok(false),
     }
 }
 
@@ -471,6 +804,9 @@ fn activate_add_preset(terminal: &mut TerminalSession, app: &mut App) -> Result<
             app.selected = 0;
         }
         2 => {
+            begin_create_preset(terminal, app)?;
+        }
+        3 => {
             app.screen = Screen::Presets;
             app.selected = 0;
             app.message = "Back to presets".to_string();
@@ -588,6 +924,21 @@ fn prompt(label: &str) -> Result<String> {
     Ok(value.trim().to_string())
 }
 
+fn prompt_without_pause(terminal: &mut TerminalSession, label: &str) -> Result<Option<String>> {
+    terminal.suspend()?;
+    print!("{label}: ");
+    io::stdout().flush()?;
+    let mut value = String::new();
+    io::stdin().read_line(&mut value)?;
+    terminal.resume()?;
+
+    let trimmed = value.trim().to_string();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(trimmed))
+}
+
 fn prompt_multiline() -> Result<String> {
     println!("paste preset text, then enter a single '.' line to finish:");
     let mut lines = Vec::new();
@@ -614,6 +965,15 @@ fn selected_preset_id(app: &App) -> Result<Option<u32>> {
     Ok(active::read_active_id()?)
 }
 
+fn selected_saved_preset_id(app: &App) -> Option<u32> {
+    if matches!(app.screen, Screen::Presets) && app.selected >= 2 {
+        let preset_index = app.selected - 2;
+        return app.presets.get(preset_index).map(|preset| preset.id);
+    }
+
+    None
+}
+
 fn show_preset_flow(selected_preset_id: Option<u32>) -> Result<String> {
     let Some(id) = selected_preset_id else {
         println!("No preset selected or active.");
@@ -628,4 +988,17 @@ fn show_preset_flow(selected_preset_id: Option<u32>) -> Result<String> {
     println!("{}", raw);
 
     Ok(format!("Displayed preset {} ({})", entry.id, entry.name))
+}
+
+fn rename_preset_flow(selected_preset_id: Option<u32>) -> Result<String> {
+    let Some(id) = selected_preset_id else {
+        println!("No preset selected or active.");
+        return Ok("No preset to rename".to_string());
+    };
+
+    let entry = index::resolve_id(id)?;
+    println!("Renaming preset {} ({})", entry.id, entry.name);
+    let name = prompt("new preset name")?;
+    commands::rename::run(id.to_string(), name.clone())?;
+    Ok(format!("Renamed preset {} to {}", id, name))
 }

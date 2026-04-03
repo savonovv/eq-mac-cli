@@ -1,10 +1,11 @@
 use crate::cli::DaemonCommand;
 use crate::storage::daemon_state;
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -39,19 +40,33 @@ pub fn notify_reload() -> Result<()> {
 }
 
 fn start() -> Result<()> {
-    if daemon_state::is_running()? {
-        println!("daemon already running");
-        return Ok(());
-    }
-
-    cleanup_stale_runtime()?;
-
     let daemon_path = std::env::current_exe()?.with_file_name("eqmacd");
     if !daemon_path.exists() {
         bail!(
             "eqmacd binary not found next to eqcli at {}",
             daemon_path.display()
         );
+    }
+
+    if daemon_state::is_running()? {
+        println!("daemon already running");
+        return Ok(());
+    }
+
+    if let Some(pid) = find_running_daemon_pid(&daemon_path)? {
+        daemon_state::write_pid(pid)?;
+        wait_until_ready()?;
+        println!("daemon already running");
+        return Ok(());
+    }
+
+    cleanup_stale_runtime()?;
+
+    if let Some(pid) = find_running_daemon_pid(&daemon_path)? {
+        daemon_state::write_pid(pid)?;
+        wait_until_ready()?;
+        println!("daemon already running");
+        return Ok(());
     }
 
     let log_path = daemon_state::log_path()?;
@@ -88,7 +103,12 @@ fn stop() -> Result<()> {
 }
 
 fn restart() -> Result<()> {
-    let _ = stop();
+    if daemon_state::is_running()? {
+        notify_reload()?;
+        println!("daemon reloaded");
+        return Ok(());
+    }
+
     start()
 }
 
@@ -141,4 +161,24 @@ fn send_command(command: &str) -> Result<()> {
         .with_context(|| format!("failed to connect to {}", socket.display()))?;
     stream.write_all(command.as_bytes())?;
     Ok(())
+}
+
+fn find_running_daemon_pid(daemon_path: &Path) -> Result<Option<u32>> {
+    let output = Command::new("pgrep")
+        .args(["-f", &daemon_path.display().to_string()])
+        .output()?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let pid = raw
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::parse)
+        .transpose()?;
+
+    Ok(pid)
 }
