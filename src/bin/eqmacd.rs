@@ -194,8 +194,9 @@ fn current_runtime_preset() -> Result<Option<RuntimePreset>> {
         return Ok(None);
     };
 
-    let name = storage::index::resolve_id(id)?.name;
-    let raw = storage::presets::read_raw_preset(id)?;
+    let entry = storage::index::resolve_id(id)?;
+    let name = entry.name.clone();
+    let raw = storage::presets::read_raw_preset(&entry)?;
     let preset = parser::parse_preset(&raw, Some(name))?;
     Ok(Some(RuntimePreset::from_preset(&preset)))
 }

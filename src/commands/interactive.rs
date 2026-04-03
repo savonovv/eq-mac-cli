@@ -131,10 +131,13 @@ impl App {
         self.outputs = commands::audio::available_output_devices()?;
 
         self.overview.active_preset = match active::read_active_id()? {
-            Some(id) => {
-                let entry = index::resolve_id(id)?;
-                format!("{} ({})", entry.id, entry.name)
-            }
+            Some(id) => match index::resolve_id(id) {
+                Ok(entry) => format!("{} ({})", entry.id, entry.name),
+                Err(_) => {
+                    active::write_active_id(None)?;
+                    "None".to_string()
+                }
+            },
             None => "None".to_string(),
         };
         self.overview.daemon_running = daemon_state::is_running()?;
@@ -562,11 +565,17 @@ fn handle_editor_key(app: &mut App, code: KeyCode) -> Result<bool> {
         KeyCode::Char('s') | KeyCode::Char('S') => {
             let text = editor.to_preset_text();
             let id = if let Some(id) = app.editor_target {
-                presets::write_preset(id, &text)?;
+                let entry = index::resolve_id(id)?;
+                presets::write_preset(&entry, &text)?;
                 id
             } else {
                 let id = index::next_id()?;
-                presets::write_preset(id, &text)?;
+                let entry = index::IndexEntry {
+                    id,
+                    name: editor.preset_name.clone(),
+                    created_at: String::new(),
+                };
+                presets::write_preset(&entry, &text)?;
                 index::append_entry(id, &editor.preset_name)?;
                 app.editor_target = Some(id);
                 id
@@ -620,7 +629,7 @@ fn begin_edit_preset(app: &mut App) -> Result<()> {
     };
 
     let entry = index::resolve_id(id)?;
-    let raw = presets::read_raw_preset(id)?;
+    let raw = presets::read_raw_preset(&entry)?;
     let preset = parser::parse_preset(&raw, Some(entry.name.clone()))?;
     let editor = EditorState::from_preset(&preset)?;
     app.editor = Some(editor);
@@ -643,7 +652,12 @@ fn begin_create_preset(terminal: &mut TerminalSession, app: &mut App) -> Result<
 
     let id = index::next_id()?;
     let editor = EditorState::new(name.clone());
-    presets::write_preset(id, &editor.to_preset_text())?;
+    let entry = index::IndexEntry {
+        id,
+        name: name.clone(),
+        created_at: String::new(),
+    };
+    presets::write_preset(&entry, &editor.to_preset_text())?;
     index::append_entry(id, &name)?;
     let previous_active = active::read_active_id()?;
     let _ = commands::enable::run(id.to_string());
@@ -703,7 +717,8 @@ fn maybe_live_apply_editor(app: &mut App) -> Result<()> {
     };
 
     let text = editor.to_preset_text();
-    presets::write_preset(id, &text)?;
+    let entry = index::resolve_id(id)?;
+    presets::write_preset(&entry, &text)?;
     commands::daemon::ensure_started_with_state()?;
     let _ = commands::daemon::notify_reload();
     Ok(())
@@ -836,7 +851,12 @@ fn activate_delete_confirmation(app: &mut App) -> Result<()> {
         0 => {
             if let Some(target) = &app.delete_target {
                 let message = format!("Deleted preset {} ({})", target.id, target.name);
-                run_action(app, commands::delete::run(target.id.to_string()), &message)?;
+                let selector = if index::resolve_id(target.id).is_ok() {
+                    target.id.to_string()
+                } else {
+                    target.name.clone()
+                };
+                run_action(app, commands::delete::run(selector), &message)?;
             }
             app.delete_target = None;
             app.screen = Screen::Presets;
@@ -981,7 +1001,7 @@ fn show_preset_flow(selected_preset_id: Option<u32>) -> Result<String> {
     };
 
     let entry = index::resolve_id(id)?;
-    let raw = presets::read_raw_preset(id)?;
+    let raw = presets::read_raw_preset(&entry)?;
 
     println!("Preset {} ({})", entry.id, entry.name);
     println!();

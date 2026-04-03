@@ -7,7 +7,7 @@
 
 `eq-mac-cli` is a free, highly customizable EQ workflow for macOS built for people who want more control than the typical paid GUI app gives them.
 
-The core selling point is simple: this gives you a scriptable, editable, plain-text EQ system on macOS without hiding your filters behind a closed UI or charging you for basic control. Your presets are real text files, use familiar APO-style filter lines, can be edited in the terminal, and can be reused, versioned, and tuned as aggressively as you want.
+It gives you a scriptable, editable, plain-text EQ system on macOS without hiding your filters behind a closed UI or charging you for basic control. Your presets are real text files, use familiar APO-style filter lines, can be edited in the terminal, and can be reused, versioned, and tuned as aggressively as you want.
 
 If you have looked for a macOS EQ tool that is both deeply customizable and free, that is exactly the gap this project is trying to fill.
 
@@ -289,7 +289,7 @@ All app state lives under:
 
 Important files:
 
-1. `presets/<id>.txt`
+1. `presets/<preset-name>.txt`
 2. `index.txt`
 3. `active.txt`
 4. `config.txt`

@@ -1,6 +1,6 @@
 use crate::eq::{parser, validate};
 use crate::storage::{index, presets};
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::fs;
 use std::path::PathBuf;
 
@@ -15,7 +15,12 @@ pub fn run(file: Option<PathBuf>, text: Option<String>, name: String) -> Result<
     let preset = parser::parse_preset(&raw, Some(name.clone()))?;
     validate::validate_preset(&preset)?;
     let next_id = index::next_id()?;
-    presets::write_preset(next_id, &preset.original_text)?;
+    let entry = index::IndexEntry {
+        id: next_id,
+        name: name.clone(),
+        created_at: String::new(),
+    };
+    presets::write_preset(&entry, &preset.original_text)?;
     index::append_entry(next_id, &name)?;
     println!("saved preset {next_id}: {name}");
     Ok(())

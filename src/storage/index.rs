@@ -1,5 +1,5 @@
 use crate::storage::paths;
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use chrono::Utc;
 use std::fs;
 
@@ -35,6 +35,9 @@ pub fn read_entries() -> Result<Vec<IndexEntry>> {
 
 pub fn append_entry(id: u32, name: &str) -> Result<()> {
     let mut entries = read_entries()?;
+    if entries.iter().any(|entry| entry.name == name) {
+        bail!("preset already exists: {name}");
+    }
     entries.push(IndexEntry {
         id,
         name: name.to_string(),
@@ -94,6 +97,12 @@ pub fn remove_entry(id: u32) -> Result<()> {
 
 pub fn rename_entry(id: u32, new_name: &str) -> Result<()> {
     let mut entries = read_entries()?;
+    if entries
+        .iter()
+        .any(|entry| entry.id != id && entry.name == new_name)
+    {
+        bail!("preset already exists: {new_name}");
+    }
     let mut found = false;
     for entry in &mut entries {
         if entry.id == id {

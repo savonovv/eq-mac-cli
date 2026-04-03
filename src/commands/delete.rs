@@ -3,7 +3,7 @@ use anyhow::Result;
 
 pub fn run(selector: String) -> Result<()> {
     let entry = index::resolve_selector(&selector)?;
-    presets::delete_preset(entry.id)?;
+    presets::delete_preset(&entry)?;
 
     let active_id = active::read_active_id()?;
     let remaining_entries: Vec<_> = index::read_entries()?
