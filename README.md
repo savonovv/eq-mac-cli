@@ -43,7 +43,16 @@ This project is focused on being:
 
 ## Quick Start
 
-### 1. Build or install locally
+### 1. Install
+
+Homebrew tap:
+
+```bash
+brew tap savonovv/eq-mac-cli
+brew install eq-mac-cli
+```
+
+Or build/install locally:
 
 ```bash
 cargo install --path . --force
