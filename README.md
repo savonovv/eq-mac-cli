@@ -98,6 +98,12 @@ From a file:
 eqcli add --file examples/sample-preset.txt --name "My EQ"
 ```
 
+Samsung example:
+
+```bash
+eqcli add --file examples/samsung.apo.txt --name "Samsung"
+```
+
 From inline text:
 
 ```bash
