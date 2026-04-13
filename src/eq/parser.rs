@@ -22,7 +22,7 @@ fn parse_autoeq(input: &str, fallback_name: Option<String>) -> Result<Preset> {
     let mut active_channels: Vec<String> = Vec::new();
     for line in input.lines().map(str::trim).filter(|line| !line.is_empty()) {
         if let Some(value) = line.strip_prefix("Preamp:") {
-            preamp_db = value.trim().trim_end_matches("dB").trim().parse()?;
+            preamp_db = trim_unit_suffix(value, "db").parse()?;
             continue;
         }
 
@@ -161,6 +161,17 @@ fn extract_token<'a>(line: &'a str, start: &str, end: &str) -> Result<&'a str> {
         .ok_or_else(|| anyhow::anyhow!("missing {start} in line: {line}"))
 }
 
+fn trim_unit_suffix<'a>(value: &'a str, unit: &str) -> &'a str {
+    let trimmed = value.trim();
+    if trimmed.len() >= unit.len()
+        && trimmed[trimmed.len() - unit.len()..].eq_ignore_ascii_case(unit)
+    {
+        trimmed[..trimmed.len() - unit.len()].trim_end()
+    } else {
+        trimmed
+    }
+}
+
 fn extract_optional_token<'a>(line: &'a str, start: &str, end: &str) -> Result<Option<&'a str>> {
     let after = line.split(start).nth(1);
     let Some(after) = after else {
@@ -210,5 +221,18 @@ mod tests {
         assert_eq!(preset.channel_filters[0].filters.len(), 1);
         assert_eq!(preset.channel_filters[1].channel_name, "R");
         assert_eq!(preset.channel_filters[1].filters.len(), 1);
+    }
+
+    #[test]
+    fn parses_preamp_with_lowercase_db_suffix() {
+        let preset = parse_preset(
+            "Preamp: -5 db\nFilter 1: ON LSC Fc 28 Hz Gain 4.1 dB Q 0.917\nFilter 2: ON PK Fc 144 Hz Gain 0.4 dB Q 4.36\nFilter 3: ON PK Fc 223 Hz Gain -3.4 dB Q 0.412\nFilter 4: ON PK Fc 791 Hz Gain 2.4 dB Q 1.277\nFilter 5: ON PK Fc 2335 Hz Gain -0.9 dB Q 1.414\nFilter 6: ON PK Fc 2451 Hz Gain 0.5 dB Q 2.998\nFilter 7: ON PK Fc 3596 Hz Gain -3 dB Q 2.133\nFilter 8: ON PK Fc 4868 Hz Gain 1.6 dB Q 1.826",
+            Some("Test".to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(preset.preamp_db, -5.0);
+        assert_eq!(preset.filters.len(), 8);
+        assert!(matches!(preset.filters[0].kind, FilterKind::LowShelf));
     }
 }
